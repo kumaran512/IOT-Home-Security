@@ -1,6 +1,6 @@
 # Hardware Verification Checklist
 
-Use this checklist to identify the actual parts before preparing a pin-level plan. “Confirmed” below means only that the project description identifies the component and intended role; it does not mean the exact model or electrical behavior has been checked. No model numbers, voltage ratings, interfaces, or current ratings have been supplied yet.
+Use this checklist to identify the actual parts before preparing a pin-level plan. User-provided markings and descriptions below are observations/reports, not independent verification of exact models or electrical behavior. Electrical ratings and board-specific details remain unverified unless documented here with a source or measurement.
 
 For each item, record the marking on the part, a clear photo, the manufacturer/model, a datasheet or board pinout source, and any measurements. Do not infer ratings from appearance or from a similar module listing. Keep unverified fields blank or marked TBD; do not wire the part to a controller until its supply and signal limits are known.
 
@@ -10,20 +10,20 @@ Fill the blank fields from the physical item and its own documentation. Use one 
 
 | Component (project inventory) | Manufacturer / model | Board or part markings | Voltage rating(s) | Interface and output type | Current requirements | Datasheet / product reference | Verification status | Notes / uncertainties |
 |---|---|---|---|---|---|---|---|---|
-| Arduino Nano |  |  |  |  |  |  |  |  |
-| ESP32-CAM board |  |  |  |  |  |  |  |  |
-| Camera module / sensor |  |  |  |  |  |  |  |  |
-| 0.96-inch OLED |  |  |  |  |  |  |  |  |
-| Magnetic door sensor |  |  |  |  |  |  |  |  |
-| IR disturbance sensor |  |  |  |  |  |  |  |  |
-| Flame sensor |  |  |  |  |  |  |  |  |
+| Arduino Nano |  | ATmega328PU marking; Mini-USB connector (user-observed) | TBD | TBD; exact pin order TBD | TBD |  | User-observed markings; exact board revision, clock, bootloader, ratings, and pin order pending verification |  |
+| ESP32-CAM board |  | Mini-USB connector (user-observed) | TBD | TBD; GPIO mapping and exact pin order TBD | TBD |  | User-observed connector; exact board revision and ratings pending verification |  |
+| Camera module / sensor |  | Ribbon marking: TY-OV2 640-V2.0 (user-observed) | TBD | TBD | TBD |  | Ribbon marking user-observed; camera sensor identification and ratings pending verification |  |
+| 0.96-inch OLED |  | GM009605 (user-observed) | TBD | I²C (user-reported); exact pin order TBD | TBD |  | Size 0.96 inch, 128 × 64, monochrome, SSD1306 controller, and I²C are user-reported; electrical details pending verification |  |
+| Magnetic door sensor |  | Magnetic reed switch (user-reported) | TBD | Switch/contact; NO/NC behavior TBD | TBD |  | Reed type user-reported; NO/NC behavior and electrical limits pending verification |  |
+| IR disturbance sensor |  |  | TBD | Binary output (user-reported); output voltage/polarity TBD | TBD |  | Output type user-reported; electrical limits and exact module pending verification |  |
+| Flame sensor |  | VCC, GND, DO terminals (user-reported) | TBD | DO reported as binary output; output voltage/polarity TBD | TBD |  | Terminals and binary-output description user-reported; electrical limits and module details pending verification |  |
 | Room-indicator LEDs (3; add a row per distinct type) |  |  |  |  |  |  |  |  |
-| Vibration motor |  |  |  |  |  |  |  |  |
-| Servo (planned / conditional) |  |  |  |  |  |  |  |  |
-| Main low-voltage supply / adapter |  |  |  |  |  |  |  |  |
-| Battery / cells |  |  |  |  |  |  |  |  |
-| Charger and protection / BMS |  |  |  |  |  |  |  |  |
-| Power-path / switchover parts |  |  |  |  |  |  |  |  |
+| Vibration motor |  | Two-wire motor (user-reported) | TBD | Two-wire motor; driver/interface TBD | TBD; motor ratings pending verification |  | Construction user-reported; operating/stall ratings pending verification |  |
+| Servo (planned / conditional) |  | Blue SG90 (user-reported) | TBD | TBD | Current requirements pending verification |  | Color/model user-reported; exact variant, supply, and servo current pending verification |  |
+| Main low-voltage supply / adapter |  | DIY supply, described as 5 V, 5 A (user-reported) | 5 V, 5 A stated; output and ratings unverified | Intended to power setup; topology, connector, polarity TBD | 5 A stated capacity unverified; available continuous/transient current TBD |  | User-described rating only; design, regulation, protection, and safe current capacity pending verification |  |
+| Battery / cells |  | DIY battery described as 5 V (user-reported) | 5 V stated; chemistry/cell topology and limits TBD | Output/power path TBD | Capacity and discharge capability TBD |  | User description only; chemistry, capacity, protection, and output behavior pending verification |  |
+| Charger and protection / BMS |  | Charger described as 5 V, 5 A (user-reported) | 5 V, 5 A stated; charge profile/limits TBD | Charger type and battery compatibility TBD | 5 A stated rating unverified; actual charge current TBD |  | User description only; charger type, compatibility, and protection pending verification |  |
+| Power-path / switchover parts |  | Single-channel 5 V relay module (user-reported) | 5 V stated for module; coil/contact ratings TBD | Relay input logic and contact arrangement (NO/NC/COM) TBD | Coil and switched-load current ratings TBD |  | Module description user-reported; input, isolation, contact arrangement and changeover behavior pending verification |  |
 | Regulators (add a row per distinct part) |  |  |  |  |  |  |  |  |
 | Motor / servo drivers (add a row per distinct part) |  |  |  |  |  |  |  |  |
 | Signal-level interface / conditioning parts |  |  |  |  |  |  |  |  |
