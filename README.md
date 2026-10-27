@@ -1,43 +1,43 @@
 # IoT Based Home Security System
 
-A school-level IoT home security prototype combining local sensor monitoring, hazard alerts, battery backup, and wireless camera surveillance.
+A school-level IoT home security prototype combining local sensor monitoring, hazard alerts, battery backup, and wireless camera surveillance. The Arduino Nano is the primary local controller; the ESP32-CAM is an independent camera and Wi-Fi access-point subsystem.
 
-## Hardware
+## Hardware overview
 
-- Arduino Nano
-- ESP32-CAM
-- 0.96-inch OLED display
+Before wiring, identify the actual boards and components in the [hardware verification checklist](hardware/verification-checklist.md).
+
+- Arduino Nano (exact board / logic-voltage variant to be confirmed)
+- ESP32-CAM (exact module and camera configuration to be confirmed)
+- 0.96-inch OLED display (controller, interface, and voltage to be confirmed)
 - Three room-indicator LEDs
-- Magnetic door sensor
-- IR disturbance sensor
-- Flame sensor
-- Vibration motor
+- Magnetic door sensor, IR disturbance sensor, and flame sensor
+- Vibration motor for local alerts
 - Servo motor for camera positioning
-- Main power-failure detection and battery backup circuit
+- Main-power failure detection and battery backup
 
 ## Architecture
 
-### Arduino Nano
-- Monitor door, IR, and flame sensors.
-- Control the three room LEDs and OLED display.
-- Operate the vibration alert.
-- Monitor main power availability.
-- Send events to the ESP32-CAM over UART.
+The Nano monitors the local sensors and drives local indicators and alerts. These functions must continue if the ESP32-CAM, UART link, or Wi-Fi is unavailable. The ESP32-CAM provides a browser-accessible camera over its own access point and may receive event messages from the Nano. Camera operation and network availability are supplementary to local alarm behavior.
 
-### ESP32-CAM
-- Create a dedicated Wi-Fi access point.
-- Provide a browser-based live camera view.
-- Control the camera's servo position.
-- Receive sensor-event messages from the Nano.
+See [system architecture](docs/system-architecture.md) and [UART protocol plan](docs/uart-protocol.md).
 
-## Development Principles
+## Repository structure
 
-- Local alerts must work independently of Wi-Fi and the camera.
-- Confirm all pin assignments against the actual hardware before wiring.
-- Protect ESP32 inputs from 5 V logic signals.
-- Use suitable drivers and regulated supplies for motors.
-- Design battery backup around the actual battery chemistry and load requirements.
+```text
+docs/                  Project, requirements, architecture, wiring, and plans
+firmware/arduino-nano/ Arduino Nano firmware entry point
+firmware/esp32-cam/    ESP32-CAM firmware entry point
+hardware/              Component inventory and connection notes
+tests/                 Subsystem and integration test plans
+```
 
-## Project Status
+## Development roadmap
 
-Initial repository setup. Hardware verification, pin allocation, firmware development, and integration testing are pending.
+1. Identify exact board, sensor, display, servo, motor-driver, and battery variants.
+2. Review the provisional pin-allocation and UART plans against those parts.
+3. Build and check low-voltage circuits and power rails; validate sensor behavior.
+4. Implement and test Nano local monitoring and alert behavior.
+5. Implement and test the ESP32-CAM access point and camera independently.
+6. Integrate over a level-safe UART link and execute the test plans.
+
+No full firmware is implemented yet. Pin assignments and electrical details remain unconfirmed; consult the [pin plan](docs/pin-allocation.md), [power plan](docs/power-management.md), and [wiring guide](docs/wiring-guide.md) before connecting hardware. Do not place mains-voltage wiring on a student-accessible breadboard.

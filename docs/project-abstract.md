@@ -1,0 +1,5 @@
+# Project Abstract
+
+The IoT Based Home Security System is a school-level prototype for demonstrating local hazard detection alongside networked visual monitoring. An Arduino Nano is intended to monitor a magnetic door sensor, an IR disturbance sensor, a flame sensor, and main-power status. It provides local status through an OLED and three room-indicator LEDs and can activate a vibration motor for alerts. An ESP32-CAM operates as a separate camera and Wi-Fi access-point subsystem, with a browser live view and a planned UART event link to the Nano. A servo may position the camera if a safe power and control arrangement is verified.
+
+The system is deliberately divided so that the Nano can continue monitoring and alerting if the camera, Wi-Fi, or inter-controller link fails. Battery backup is intended to sustain the defined low-voltage loads during a loss of main power; its capacity, chemistry, charging, and protection design remain to be selected. This document set is a planning baseline, not a validated circuit design. Exact board variants, sensor interfaces, wiring, and pin assignments must be confirmed before construction.
