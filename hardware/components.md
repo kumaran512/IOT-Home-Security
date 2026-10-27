@@ -14,7 +14,7 @@ This is the project-level inventory. The user-provided markings and OLED details
 | Vibration motor | Local alert | User-reported two-wire motor. Verify model, rated/stall current, voltage, driver and suppression needs. |
 | Servo | Planned camera positioning | User-reported blue SG90. Verify exact variant, voltage, moving/stall current, torque and travel limits. |
 | Main supply | Low-voltage input | User-described DIY 5 V, 5 A supply intended for the setup. Verify topology, regulation, protection, output tolerance/current, connector and polarity. |
-| Battery, charger and power path | Backup | User-described DIY 5 V battery, 5 V 5 A charger, and single-channel 5 V relay module. Verify battery chemistry/capacity/protection, charger type/compatibility, relay input/contact details, and safe power-path/changeover design. |
+| Battery, charger and power path | Backup | User-reported USB power bank rated 5,000 mAh with 5 V output; verify manufacturer/model, energy rating, usable 5 V capacity, maximum output current, and pass-through behavior. User-reported 5 V, 5 A charger; verify type and compatibility. User-reported single-channel 5 V active-low relay; verify model, input thresholds, isolation, contact ratings, and terminal arrangement. Relay control polarity alone does not provide power-failure detection or automatic changeover. |
 | Regulators, drivers and level interface | Conditioning | Part/model, input/output range, current, logic thresholds and thermal/transient limits |
 
 Every electrical value remains TBD until supported by a part marking, datasheet, or documented measurement. Preserve the source and measured results with the project before finalizing the connection notes.
