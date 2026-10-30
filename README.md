@@ -1,43 +1,56 @@
-# IoT Based Home Security System
+# IoT-Based Home Security System
 
-A school-level IoT home security prototype combining local sensor monitoring, hazard alerts, battery backup, and wireless camera surveillance. The Arduino Nano is the primary local controller; the ESP32-CAM is an independent camera and Wi-Fi access-point subsystem.
+An IoT home-security prototype combining local sensor monitoring, hazard alerts, power-failure backup, and wireless camera surveillance.
 
-## Hardware overview
+The system uses two controllers:
 
-Before wiring, identify the actual boards and components in the [hardware verification checklist](hardware/verification-checklist.md).
+- **Arduino Nano:** local sensor monitoring, room indicators, and alerts.
+- **ESP32-CAM:** camera and Wi-Fi access-point functionality.
 
-- Arduino Nano (exact board / logic-voltage variant to be confirmed)
-- ESP32-CAM (exact module and camera configuration to be confirmed)
-- 0.96-inch OLED display (controller, interface, and voltage to be confirmed)
-- Three room-indicator LEDs
-- Magnetic door sensor, IR disturbance sensor, and flame sensor
-- Vibration motor for local alerts
-- Servo motor for camera positioning
-- Main-power failure detection and battery backup
+Local safety functions should remain independent of the camera, Wi-Fi, and UART connection.
 
-## Architecture
+## Firmware
 
-The Nano monitors the local sensors and drives local indicators and alerts. These functions must continue if the ESP32-CAM, UART link, or Wi-Fi is unavailable. The ESP32-CAM provides a browser-accessible camera over its own access point and may receive event messages from the Nano. Camera operation and network availability are supplementary to local alarm behavior.
+### Arduino Nano
 
-See [system architecture](docs/system-architecture.md) and [UART protocol plan](docs/uart-protocol.md).
+The confirmed final sketch is:
 
-## Repository structure
+`nano/Nanov12/Nanov12.ino`
 
-```text
-docs/                  Project, requirements, architecture, wiring, and plans
-firmware/arduino-nano/ Arduino Nano firmware entry point
-firmware/esp32-cam/    ESP32-CAM firmware entry point
-hardware/              Component inventory and connection notes
-tests/                 Subsystem and integration test plans
-```
+Earlier Nano sketches are preserved under `nano/versions/`. See [Nano firmware notes](nano/README.md).
 
-## Development roadmap
+### ESP32-CAM
 
-1. Identify exact board, sensor, display, servo, motor-driver, and battery variants.
-2. Review the provisional pin-allocation and UART plans against those parts.
-3. Build and check low-voltage circuits and power rails; validate sensor behavior.
-4. Implement and test Nano local monitoring and alert behavior.
-5. Implement and test the ESP32-CAM access point and camera independently.
-6. Integrate over a level-safe UART link and execute the test plans.
+The active development source is:
 
-No full firmware is implemented yet. Pin assignments and electrical details remain unconfirmed; consult the [pin plan](docs/pin-allocation.md), [power plan](docs/power-management.md), and [wiring guide](docs/wiring-guide.md) before connecting hardware. Do not place mains-voltage wiring on a student-accessible breadboard.
+`esp32cam-test/src/main.cpp`
+
+The PlatformIO configuration is in `esp32cam-test/platformio.ini`.
+
+Prebuilt release binaries are in `esp32cam-test/firmware-release/`. Historical firmware ZIP archives are in `esp32cam-test/firmware-archives/`.
+
+Historical source snapshots are retained under `esp32cam-test/src/`. These snapshots are not necessarily the current firmware.
+
+## Repository layout
+
+- `nano/` — final Nano sketch and historical versions.
+- `esp32cam-test/` — ESP32-CAM source, PlatformIO configuration, release binaries, and historical firmware archives.
+- `docs/` — system architecture, requirements, pin allocation, wiring, UART protocol, power management, and testing checklist.
+- `hardware/` — component inventory, connections, and verification checklist.
+- `schematics/` — system block diagram, controller schematics, netlist, and design decisions.
+- `tests/` — subsystem and integration test plans.
+- `firmware/` — earlier planning skeletons retained for reference.
+
+## Hardware and safety
+
+Confirm the exact board variants, sensor interfaces, GPIO assignments, logic levels, camera configuration, and power requirements before wiring.
+
+Do not connect mains voltage to a student-accessible breadboard. Verify power rails and low-voltage circuits before connecting the controllers or sensors.
+
+## Validation status
+
+Nano v12 is designated as the final Nano sketch. The ESP32-CAM source and release binaries are retained in the repository.
+
+Compilation, flashing, and end-to-end hardware operation should be verified on the target hardware before deployment. The presence of a firmware binary does not, by itself, establish that the complete system has passed testing.
+
+Consult the files under `docs/`, `hardware/`, `schematics/`, and `tests/` before building or modifying the system.

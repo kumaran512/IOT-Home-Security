@@ -1,0 +1,84 @@
+nano clone
+oled 0.96 ssd1306 i think so
+1 ir sensor
+1 flame sensor
+1 servo in which esp32cam is mounted
+1 channel 5v relay module for power fail change over mechanism
+preferably uart serial communication between nano and esp32
+
+codex install
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+
+commit and push (edit as required)
+# 1. Confirm repository and branch
+git status
+git branch --show-current
+
+# 2. Check whitespace errors
+git diff --check
+
+# 3. Stage all project changes, including new files
+git add -A
+
+# 4. Review exactly what will be committed
+git status --short
+git diff --cached --stat
+git diff --cached --check
+
+# 5. Commit
+git commit -m "Schematics V1"
+
+# 6. Push the current branch to GitHub
+git push origin "$(git branch --show-current)"
+
+# 7. Confirm everything is synchronized
+git status
+
+todo
+About remembering this permanently
+I'll follow this preference throughout our conversation and whenever this context is available in future chats. However, I can't directly guarantee a permanent Memory update from this chat.
+
+To reinforce it in your persistent memory, open Settings → Personalization → Memory summary → Manage and request this preference:
+Always provide code in standard Markdown fenced code blocks with a language identifier. Avoid writing blocks and alternative code presentation formats for code. Prefer complete, copy-paste-ready code, with explanations outside the code block.
+
+From now on, for your Arduino Nano and ESP32-CAM project, I'll use the standard copy-and-paste-friendly format.
+
+Code download
+cd /workspaces/IOT-Home-Security/esp32cam-test
+
+mkdir -p firmware-release
+
+# Copy compiled firmware binaries
+cp .pio/build/esp32cam/bootloader.bin firmware-release/
+cp .pio/build/esp32cam/partitions.bin firmware-release/
+cp .pio/build/esp32cam/firmware.bin firmware-release/
+
+# Copy boot_app0.bin from PlatformIO's installed ESP32 Arduino framework
+BOOT_APP0="$(find ~/.platformio/packages -name boot_app0.bin -type f 2>/dev/null | head -n 1)"
+
+if [ -n "$BOOT_APP0" ]; then
+    cp "$BOOT_APP0" firmware-release/
+    echo "boot_app0.bin found: $BOOT_APP0"
+else
+    echo "WARNING: boot_app0.bin was not found."
+fi
+
+# Create ZIP containing the available binaries
+cd firmware-release
+zip -j ../DHARSSHITH-ESP32CAM-firmware7.zip \
+    bootloader.bin partitions.bin firmware.bin \
+    $( [ -f boot_app0.bin ] && echo boot_app0.bin )
+
+cd ..
+
+# Verify release package
+echo ""
+echo "=== Firmware release files ==="
+ls -lh firmware-release/
+
+echo ""
+echo "=== Release ZIP ==="
+ls -lh DHARSSHITH-ESP32CAM-firmware7.zip
+
+esp32 cam connection link
+https://randomnerdtutorials.com/program-upload-code-esp32-cam/
