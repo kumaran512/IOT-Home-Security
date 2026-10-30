@@ -1,0 +1,593 @@
+/*
+  IoT Home Security - ESP32-CAM Standalone Test Firmware
+  Target: AI-Thinker ESP32-CAM
+  Features:
+    - Wi-Fi access point
+    - Live MJPEG camera stream
+    - Web controls for IR, Pedal, and Flame servo angles
+    - Auto Radar sweep
+    - Manual sensor-position aiming
+    - No Arduino Nano/UART integration in this test version
+
+  Libraries:
+    - ESP32 board package by Espressif
+    - ESP32Servo by Kevin Harrington / John K. Bennett
+
+  Hardware:
+    - Servo signal: GPIO 13 (do not use microSD at the same time)
+    - Servo power: separate regulated 5V supply recommended
+    - Servo GND and ESP32-CAM GND must be connected together
+*/
+
+#include "esp_camera.h"
+#include "img_converters.h"
+#include <WiFi.h>
+#include <WebServer.h>
+#include "esp_http_server.h"
+#include <ESP32Servo.h>
+#include <Preferences.h>
+
+// ---------- AI-Thinker ESP32-CAM camera pin mapping ----------
+#define PWDN_GPIO_NUM     32
+#define RESET_GPIO_NUM    -1
+#define XCLK_GPIO_NUM      0
+#define SIOD_GPIO_NUM     26
+#define SIOC_GPIO_NUM     27
+#define Y9_GPIO_NUM       35
+#define Y8_GPIO_NUM       34
+#define Y7_GPIO_NUM       39
+#define Y6_GPIO_NUM       36
+#define Y5_GPIO_NUM       21
+#define Y4_GPIO_NUM       19
+#define Y3_GPIO_NUM       18
+#define Y2_GPIO_NUM        5
+#define VSYNC_GPIO_NUM    25
+#define HREF_GPIO_NUM     23
+#define PCLK_GPIO_NUM     22
+
+// ---------- User settings ----------
+const char* AP_SSID = "DHARSSHITH-CAM";
+const char* AP_PASSWORD = "CamSecure123"; // At least 8 characters
+
+constexpr int SERVO_PIN = 13; // No microSD card use while servo is on GPIO 13
+constexpr int SERVO_MIN_ANGLE = 0;
+constexpr int SERVO_MAX_ANGLE = 180;
+constexpr int RADAR_MIN_ANGLE = 10;
+constexpr int RADAR_MAX_ANGLE = 170;
+constexpr int RADAR_STEP = 2;
+constexpr unsigned long RADAR_STEP_INTERVAL_MS = 45;
+
+// ---------- Globals ----------
+WebServer webServer(80);
+httpd_handle_t streamHttpd = nullptr;
+Servo cameraServo;
+Preferences preferences;
+
+enum CameraMode : uint8_t {
+  MODE_RADAR,
+  MODE_MANUAL
+};
+
+CameraMode cameraMode = MODE_RADAR;
+int currentAngle = 90;
+int radarDirection = 1;
+unsigned long lastRadarStep = 0;
+
+int irAngle = 45;
+int pedalAngle = 90;
+int flameAngle = 135;
+
+const char INDEX_HTML[] PROGMEM = R"HTML(
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DHARSSHITH Home Security Camera</title>
+<style>
+:root{color-scheme:dark;--bg:#10151d;--card:#1b2532;--line:#344356;--accent:#49c6a8;--text:#f3f6fa;--muted:#aab7c7}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,Arial,sans-serif}
+header{padding:18px 16px;background:#17212d;border-bottom:1px solid var(--line);text-align:center}
+h1{font-size:1.35rem;margin:0 0 4px}
+header p{margin:0;color:var(--muted);font-size:.92rem}
+main{max-width:1000px;margin:auto;padding:14px;display:grid;gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+h2{font-size:1.05rem;margin:0 0 12px}
+.videoWrap{background:#05080b;border-radius:10px;overflow:hidden;min-height:180px;display:flex;align-items:center;justify-content:center}
+#stream{display:block;width:100%;height:auto;max-height:65vh;object-fit:contain}
+.small{font-size:.88rem;color:var(--muted);margin:10px 0 0}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+button{border:0;border-radius:9px;padding:11px 14px;background:#314257;color:white;font-weight:650;cursor:pointer}
+button.primary{background:var(--accent);color:#06251e}
+button:active{transform:scale(.98)}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+label{display:block;font-size:.9rem;color:var(--muted);margin-bottom:5px}
+input{width:100%;padding:11px;border-radius:8px;border:1px solid #52647a;background:#0e141c;color:white;font-size:1rem}
+.angleValue{font-size:.85rem;color:var(--muted);margin-top:5px}
+.status{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.badge{background:#0e141c;border:1px solid var(--line);padding:7px 10px;border-radius:8px}
+#message{color:var(--accent);min-height:1.3em;margin-top:8px}
+footer{text-align:center;color:var(--muted);font-size:.8rem;padding:0 12px 18px}
+@media(max-width:600px){.grid{grid-template-columns:1fr}.row button{flex:1}.card{padding:12px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>DHARSSHITH Home Security</h1>
+  <p>ESP32-CAM live view &amp; servo positioning</p>
+</header>
+<main>
+  <section class="card">
+    <h2>Live Camera</h2>
+    <div class="videoWrap"><img id="stream" alt="Camera stream loading…"></div>
+    <p class="small">If the stream does not appear, check the camera power and refresh this page.</p>
+  </section>
+
+  <section class="card">
+    <h2>Camera Status</h2>
+    <div class="status">
+      <span class="badge">Mode: <strong id="mode">Loading…</strong></span>
+      <span class="badge">Servo angle: <strong id="angle">--</strong>°</span>
+      <span class="badge">Wi-Fi: <strong>DHARSSHITH-CAM</strong></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Sensor Camera Angles</h2>
+    <div class="grid">
+      <div><label for="irAngle">IR sensor angle (0–180°)</label><input id="irAngle" type="number" min="0" max="180" value="45"><div class="angleValue">Preset: IR</div></div>
+      <div><label for="pedalAngle">Pedal sensor angle (0–180°)</label><input id="pedalAngle" type="number" min="0" max="180" value="90"><div class="angleValue">Preset: Pedal</div></div>
+      <div><label for="flameAngle">Flame sensor angle (0–180°)</label><input id="flameAngle" type="number" min="0" max="180" value="135"><div class="angleValue">Preset: Flame</div></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" onclick="saveAngles()">Save Angles</button>
+    </div>
+    <p class="small">These are servo positions, not sensor inputs. Set each angle to match the physical location of that sensor.</p>
+  </section>
+
+  <section class="card">
+    <h2>Point Camera at Sensor</h2>
+    <div class="row">
+      <button onclick="aim('ir')">Aim at IR</button>
+      <button onclick="aim('pedal')">Aim at Pedal</button>
+      <button onclick="aim('flame')">Aim at Flame</button>
+    </div>
+    <p class="small">Selecting a sensor stops the automatic sweep and points the camera at its saved angle.</p>
+  </section>
+
+  <section class="card">
+    <h2>Servo Mode</h2>
+    <div class="row">
+      <button class="primary" onclick="setMode('radar')">Start Auto Radar</button>
+      <button onclick="setMode('manual')">Stop / Hold Position</button>
+    </div>
+    <p class="small">Auto Radar continuously sweeps between 10° and 170°. Stop / Hold keeps the servo at its current position.</p>
+    <div id="message" role="status"></div>
+  </section>
+</main>
+<footer>Standalone ESP32-CAM test • Nano UART integration will be added later</footer>
+<script>
+const stream=document.getElementById('stream');
+stream.src='http://'+location.hostname+':81/stream';
+
+function showMessage(s){document.getElementById('message').textContent=s}
+function clampAngle(v){return Math.max(0,Math.min(180,Number(v)||0))}
+async function request(path){
+  const r=await fetch(path,{cache:'no-store'});
+  const data=await r.json();
+  if(!r.ok) throw new Error(data.error||'Request failed');
+  return data;
+}
+async function loadSettings(){
+  try{
+    const d=await request('/api/status');
+    document.getElementById('irAngle').value=d.ir;
+    document.getElementById('pedalAngle').value=d.pedal;
+    document.getElementById('flameAngle').value=d.flame;
+    updateStatus(d);
+  }catch(e){showMessage('Could not read settings: '+e.message)}
+}
+function updateStatus(d){
+  document.getElementById('mode').textContent=d.mode;
+  document.getElementById('angle').textContent=d.angle;
+}
+async function refreshStatus(){
+  try{updateStatus(await request('/api/status'))}catch(e){}
+}
+async function saveAngles(){
+  const ir=clampAngle(document.getElementById('irAngle').value);
+  const pedal=clampAngle(document.getElementById('pedalAngle').value);
+  const flame=clampAngle(document.getElementById('flameAngle').value);
+  try{
+    const d=await request(`/api/angles?ir=${ir}&pedal=${pedal}&flame=${flame}`);
+    updateStatus(d);showMessage('Sensor angles saved.');
+  }catch(e){showMessage('Save failed: '+e.message)}
+}
+async function aim(sensor){
+  try{
+    const d=await request('/api/aim?sensor='+encodeURIComponent(sensor));
+    updateStatus(d);showMessage('Camera pointing at '+sensor.toUpperCase()+'. Auto Radar is paused.');
+  }catch(e){showMessage('Could not move camera: '+e.message)}
+}
+async function setMode(mode){
+  try{
+    const d=await request('/api/mode?value='+encodeURIComponent(mode));
+    updateStatus(d);showMessage(mode==='radar'?'Auto Radar started.':'Servo stopped; holding current position.');
+  }catch(e){showMessage('Mode change failed: '+e.message)}
+}
+loadSettings();
+setInterval(refreshStatus,1000);
+</script>
+</body>
+</html>
+)HTML";
+
+// ---------- Camera initialization ----------
+bool initCamera() {
+  Serial.println("\n===== CAMERA DIAGNOSTICS =====");
+
+  Serial.printf("Free heap before camera init: %u bytes\n",
+                (unsigned int)ESP.getFreeHeap());
+
+  Serial.printf("PSRAM found: %s\n", psramFound() ? "YES" : "NO");
+
+  if (psramFound()) {
+    Serial.printf("PSRAM size: %u bytes\n",
+                  (unsigned int)ESP.getPsramSize());
+    Serial.printf("Free PSRAM: %u bytes\n",
+                  (unsigned int)ESP.getFreePsram());
+  }
+
+  camera_config_t config = {};
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = FRAMESIZE_QVGA;
+  config.jpeg_quality = 15;
+  config.fb_count = 1;
+  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+
+  if (psramFound()) {
+    config.fb_location = CAMERA_FB_IN_PSRAM;
+  } else {
+    config.fb_location = CAMERA_FB_IN_DRAM;
+  }
+
+  Serial.println("Initializing camera sensor...");
+
+  esp_err_t err = esp_camera_init(&config);
+
+  if (err != ESP_OK) {
+    Serial.printf("Camera initialization FAILED: 0x%x\n", err);
+    Serial.printf("Free heap after failure: %u bytes\n",
+                  (unsigned int)ESP.getFreeHeap());
+    Serial.println("===== CAMERA DIAGNOSTICS END =====");
+    return false;
+  }
+
+  Serial.println("Camera initialization returned ESP_OK.");
+
+  sensor_t *s = esp_camera_sensor_get();
+
+  if (s == nullptr) {
+    Serial.println("ERROR: Camera sensor handle is NULL.");
+    Serial.println("===== CAMERA DIAGNOSTICS END =====");
+    return false;
+  }
+
+  Serial.printf("Sensor PID: 0x%04X\n", s->id.PID);
+  Serial.printf("Sensor version: 0x%02X\n", s->id.VER);
+
+  Serial.printf("Sensor frame-size setting: %d\n",
+                s->status.framesize);
+
+  Serial.printf("Free heap after initialization: %u bytes\n",
+                (unsigned int)ESP.getFreeHeap());
+
+  if (psramFound()) {
+    Serial.printf("Free PSRAM after initialization: %u bytes\n",
+                  (unsigned int)ESP.getFreePsram());
+  }
+
+  s->set_brightness(s, 0);
+  s->set_saturation(s, 0);
+
+  Serial.println("===== CAMERA DIAGNOSTICS END =====");
+  return true;
+}
+
+// ---------- Servo and settings ----------
+int boundedAngle(int angle) {
+  return constrain(angle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+}
+
+void moveServoTo(int angle) {
+  currentAngle = boundedAngle(angle);
+  cameraServo.write(currentAngle);
+  lastRadarStep = millis();
+}
+
+String modeName() {
+  return cameraMode == MODE_RADAR ? "AUTO RADAR" : "MANUAL / HOLD";
+}
+
+String statusJson() {
+  String json = "{";
+  json += "\"mode\":\"" + modeName() + "\",";
+  json += "\"angle\":" + String(currentAngle) + ",";
+  json += "\"ir\":" + String(irAngle) + ",";
+  json += "\"pedal\":" + String(pedalAngle) + ",";
+  json += "\"flame\":" + String(flameAngle);
+  json += "}";
+  return json;
+}
+
+void sendStatus() {
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.send(200, "application/json", statusJson());
+}
+
+void handleRoot() {
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.send_P(200, "text/html", INDEX_HTML);
+}
+
+void handleStatus() {
+  sendStatus();
+}
+
+void handleAngles() {
+  if (!webServer.hasArg("ir") || !webServer.hasArg("pedal") || !webServer.hasArg("flame")) {
+    webServer.send(400, "application/json", "{\"error\":\"Supply ir, pedal, and flame angles\"}");
+    return;
+  }
+
+  irAngle = boundedAngle(webServer.arg("ir").toInt());
+  pedalAngle = boundedAngle(webServer.arg("pedal").toInt());
+  flameAngle = boundedAngle(webServer.arg("flame").toInt());
+
+  preferences.putInt("ir", irAngle);
+  preferences.putInt("pedal", pedalAngle);
+  preferences.putInt("flame", flameAngle);
+  sendStatus();
+}
+
+void handleAim() {
+  if (!webServer.hasArg("sensor")) {
+    webServer.send(400, "application/json", "{\"error\":\"Missing sensor name\"}");
+    return;
+  }
+
+  String sensor = webServer.arg("sensor");
+  sensor.toLowerCase();
+  int target = -1;
+
+  if (sensor == "ir") target = irAngle;
+  else if (sensor == "pedal") target = pedalAngle;
+  else if (sensor == "flame") target = flameAngle;
+
+  if (target < 0) {
+    webServer.send(400, "application/json", "{\"error\":\"Sensor must be ir, pedal, or flame\"}");
+    return;
+  }
+
+  cameraMode = MODE_MANUAL;
+  moveServoTo(target);
+  sendStatus();
+}
+
+void handleMode() {
+  if (!webServer.hasArg("value")) {
+    webServer.send(400, "application/json", "{\"error\":\"Missing mode value\"}");
+    return;
+  }
+
+  String value = webServer.arg("value");
+  value.toLowerCase();
+
+  if (value == "radar") {
+    cameraMode = MODE_RADAR;
+    if (currentAngle >= RADAR_MAX_ANGLE) radarDirection = -1;
+    else if (currentAngle <= RADAR_MIN_ANGLE) radarDirection = 1;
+    lastRadarStep = 0; // take first step promptly
+  } else if (value == "manual") {
+    cameraMode = MODE_MANUAL;
+  } else {
+    webServer.send(400, "application/json", "{\"error\":\"Mode must be radar or manual\"}");
+    return;
+  }
+
+  sendStatus();
+}
+
+// ---------- MJPEG stream server (port 81) ----------
+static const char *STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=frame";
+static const char *STREAM_BOUNDARY = "\r\n--frame\r\n";
+static const char *STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+
+static esp_err_t streamHandler(httpd_req_t *req) {
+  esp_err_t res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
+  if (res != ESP_OK) return res;
+
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+  while (true) {
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb == nullptr) {
+      Serial.println("Stream: camera_fb_get() returned NULL");
+      return ESP_FAIL;
+    }
+
+    uint8_t *jpgBuf = fb->buf;
+    size_t jpgLen = fb->len;
+    bool converted = false;
+
+    if (fb->format != PIXFORMAT_JPEG) {
+      if (!frame2jpg(fb, 80, &jpgBuf, &jpgLen)) {
+        Serial.println("Stream: JPEG conversion failed");
+        esp_camera_fb_return(fb);
+        return ESP_FAIL;
+      }
+      converted = true;
+    }
+
+    char partBuf[64];
+    res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
+    if (res == ESP_OK) {
+      size_t hlen = snprintf(partBuf, sizeof(partBuf), STREAM_PART,
+                             static_cast<unsigned int>(jpgLen));
+      res = httpd_resp_send_chunk(req, partBuf, hlen);
+    }
+    if (res == ESP_OK) {
+      res = httpd_resp_send_chunk(req, reinterpret_cast<const char *>(jpgBuf), jpgLen);
+    }
+    if (res == ESP_OK) {
+      res = httpd_resp_send_chunk(req, "\r\n", 2);
+    }
+
+    if (converted) free(jpgBuf);
+    esp_camera_fb_return(fb);
+
+    if (res != ESP_OK) {
+      // Usually means the browser disconnected from the stream.
+      break;
+    }
+    delay(1);
+  }
+
+  return res;
+}
+
+void startStreamServer() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 81;
+  config.ctrl_port = 32769;
+  config.max_uri_handlers = 4;
+  config.lru_purge_enable = true;
+
+  httpd_uri_t streamUri = {};
+  streamUri.uri = "/stream";
+  streamUri.method = HTTP_GET;
+  streamUri.handler = streamHandler;
+  streamUri.user_ctx = nullptr;
+
+  esp_err_t err = httpd_start(&streamHttpd, &config);
+  if (err == ESP_OK) {
+    err = httpd_register_uri_handler(streamHttpd, &streamUri);
+    if (err == ESP_OK) {
+      Serial.println("MJPEG stream started at http://192.168.4.1:81/stream");
+    } else {
+      Serial.printf("Failed to register stream URI: 0x%x\n", err);
+      httpd_stop(streamHttpd);
+      streamHttpd = nullptr;
+    }
+  } else {
+    Serial.printf("Failed to start stream server: 0x%x\n", err);
+  }
+}
+
+void setupWebServer() {
+  webServer.on("/", HTTP_GET, handleRoot);
+  webServer.on("/api/status", HTTP_GET, handleStatus);
+  webServer.on("/api/angles", HTTP_GET, handleAngles);
+  webServer.on("/api/aim", HTTP_GET, handleAim);
+  webServer.on("/api/mode", HTTP_GET, handleMode);
+  webServer.onNotFound([]() {
+    webServer.send(404, "application/json", "{\"error\":\"Not found\"}");
+  });
+  webServer.begin();
+  Serial.println("Web interface started on port 80");
+}
+
+// ---------- Setup / loop ----------
+void setup() {
+  Serial.begin(115200);
+  delay(300);
+  Serial.println();
+  Serial.println("Starting DHARSSHITH ESP32-CAM...");
+
+  preferences.begin("camservo", false);
+  irAngle = boundedAngle(preferences.getInt("ir", 45));
+  pedalAngle = boundedAngle(preferences.getInt("pedal", 90));
+  flameAngle = boundedAngle(preferences.getInt("flame", 135));
+
+  // Servo uses 50 Hz. Use an external 5 V supply for the servo.
+  cameraServo.setPeriodHertz(50);
+  cameraServo.attach(SERVO_PIN, 500, 2400);
+  moveServoTo(90);
+
+  if (!initCamera()) {
+    Serial.println("Camera failed to initialize. Check board selection and camera module.");
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  WiFi.mode(WIFI_AP);
+  WiFi.setSleep(false);
+  bool apStarted = WiFi.softAP(AP_SSID, AP_PASSWORD);
+  if (!apStarted) {
+    Serial.println("Failed to start Wi-Fi access point");
+  } else {
+    Serial.print("Wi-Fi AP: ");
+    Serial.println(AP_SSID);
+    Serial.print("Password: ");
+    Serial.println(AP_PASSWORD);
+    Serial.print("Open: http://");
+    Serial.println(WiFi.softAPIP());
+  }
+
+  setupWebServer();
+  startStreamServer();
+
+  cameraMode = MODE_RADAR;
+  currentAngle = 90;
+  cameraServo.write(currentAngle);
+  lastRadarStep = millis();
+}
+
+void loop() {
+  webServer.handleClient();
+
+  if (cameraMode == MODE_RADAR) {
+    unsigned long now = millis();
+    if (now - lastRadarStep >= RADAR_STEP_INTERVAL_MS) {
+      lastRadarStep = now;
+      currentAngle += radarDirection * RADAR_STEP;
+
+      if (currentAngle >= RADAR_MAX_ANGLE) {
+        currentAngle = RADAR_MAX_ANGLE;
+        radarDirection = -1;
+      } else if (currentAngle <= RADAR_MIN_ANGLE) {
+        currentAngle = RADAR_MIN_ANGLE;
+        radarDirection = 1;
+      }
+
+      cameraServo.write(currentAngle);
+    }
+  }
+
+  delay(1);
+}

@@ -1,11 +1,11 @@
 /*
-  DHARSSHITH ESP32-CAM - MJPEG WEB STREAM TEST (CONSERVATIVE CAPTURE)
+  DHARSSHITH ESP32-CAM - RADAR-FIRST, ON-DEMAND CAMERA
   Target: AI-Thinker ESP32-CAM with OV2640
 
   Purpose:
-    - Test camera capture together with Wi-Fi and MJPEG streaming.
-    - Keep the servo disconnected and remove radar/servo code for isolation.
-    - Serve a minimal web interface on port 80 and MJPEG on port 81.
+    - Boot into automatic radar mode for maximum servo/Wi-Fi responsiveness.
+    - Initialize the camera and start MJPEG only when explicitly requested.
+    - Allow camera shutdown to release resources for radar/servo operation.
 
   Wi-Fi AP: DHARSSHITH-CAM
   Password: CamSecure123
@@ -44,6 +44,9 @@ static const char *AP_PASSWORD = "CamSecure123";
 
 WebServer webServer(80);
 httpd_handle_t streamHttpd = nullptr;
+static bool cameraReady = false;
+static bool cameraInitAttempted = false;
+static esp_err_t cameraInitError = ESP_OK;
 
 // Stage 1: manual servo control only. Auto radar will be added after this passes.
 static constexpr int SERVO_GPIO = 13;
@@ -52,9 +55,16 @@ static constexpr int SERVO_MAX_US = 2400;
 Servo panServo;
 Preferences preferences;
 int angleIR = 35;
-int anglePedal = 90;
-int angleFlame = 145;
+int anglePedal = 180;
+int angleFlame = 105;
 int currentAngle = 90;
+
+// Manual moves are stepped asynchronously: one degree every 3 ms. This keeps
+// the web server responsive instead of blocking it with delay() calls.
+static constexpr unsigned long MANUAL_STEP_INTERVAL_MS = 3;
+bool manualMoveActive = false;
+int manualTargetAngle = 90;
+unsigned long manualLastStepMs = 0;
 
 // Stage 2: non-blocking automatic radar sweep.
 bool radarRunning = false;
@@ -67,9 +77,32 @@ int radarDirection = 1;
 
 static int clampAngle(int angle) { return constrain(angle, 0, 180); }
 static void moveServoTo(int angle) {
-  currentAngle = clampAngle(angle);
+  manualTargetAngle = clampAngle(angle);
+  manualMoveActive = (manualTargetAngle != currentAngle);
+  manualLastStepMs = millis();
+  if (!manualMoveActive) {
+    panServo.write(currentAngle);
+    Serial.printf("Servo already at %d degrees\n", currentAngle);
+  } else {
+    Serial.printf("Manual servo move queued: %d -> %d degrees, 3 ms per degree\n",
+                  currentAngle, manualTargetAngle);
+  }
+}
+
+static void manualServoTick() {
+  if (!manualMoveActive) return;
+  const unsigned long now = millis();
+  if (now - manualLastStepMs < MANUAL_STEP_INTERVAL_MS) return;
+  manualLastStepMs = now;
+
+  if (currentAngle < manualTargetAngle) ++currentAngle;
+  else if (currentAngle > manualTargetAngle) --currentAngle;
   panServo.write(currentAngle);
-  Serial.printf("Servo moved to %d degrees\n", currentAngle);
+
+  if (currentAngle == manualTargetAngle) {
+    manualMoveActive = false;
+    Serial.printf("Manual servo move complete at %d degrees\n", currentAngle);
+  }
 }
 
 static void stopRadar(const char *reason) {
@@ -99,13 +132,14 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DHARSSHITH ESP32-CAM</title><style>
 :root{color-scheme:dark;--bg:#10151d;--card:#1b2532;--line:#344356;--accent:#49c6a8;--text:#f3f6fa;--muted:#aab7c7}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,Arial,sans-serif}header{padding:18px 14px;background:#17212d;border-bottom:1px solid var(--line);text-align:center}h1{font-size:1.3rem;margin:0 0 4px}header p{margin:0;color:var(--muted)}main{max-width:900px;margin:auto;padding:14px;display:grid;gap:14px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}h2{font-size:1.05rem;margin:0 0 10px}.video{background:#05080b;border-radius:10px;min-height:180px;display:flex;align-items:center;justify-content:center;overflow:hidden}img{display:block;width:100%;height:auto;max-height:70vh;object-fit:contain}.small{font-size:.88rem;color:var(--muted)}button{border:0;border-radius:8px;padding:10px 14px;background:var(--accent);color:#06251e;font-weight:700;cursor:pointer;margin:4px}input[type=number]{width:85px;padding:9px;border-radius:7px;border:1px solid var(--line);background:#0e141c;color:var(--text)}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}.status{padding:10px;border-radius:8px;background:#0e141c;color:var(--accent);overflow-wrap:anywhere}
-</style></head><body><header><h1>DHARSSHITH ESP32-CAM</h1><p>Live camera + manual servo aiming</p></header><main>
-<section class="card"><h2>Live camera</h2><div class="video"><img id="stream" alt="Waiting for camera stream…"></div><button onclick="reloadStream()">Reload Stream</button><p class="small">Keep the camera on a stable 5 V supply. Servo movement is added without changing the camera configuration.</p></section>
+</style></head><body><header><h1>DHARSSHITH ESP32-CAM</h1><p>Camera + manual servo aiming + automatic radar</p></header><main>
+<section class="card"><h2>Camera (on demand)</h2><p class="small">Camera stays off after boot to prioritize radar, servo response and Wi-Fi. Start it only when you need video.</p><div class="video"><img id="stream" alt="Camera is off to conserve resources"></div><button id="cameraStartBtn" onclick="startCamera()">Start Camera Stream</button><button id="cameraStopBtn" onclick="stopCamera()" disabled>Stop Camera / Free Resources</button><button onclick="reloadStream()" id="reloadBtn" disabled>Reload Stream</button></section>
 <section class="card"><h2>Manual servo control</h2><p class="small">Servo signal: GPIO 13. Choose a preset or enter a custom angle.</p>
 <div class="row"><label for="customAngle">Custom angle (0–180°)</label><input id="customAngle" type="number" min="0" max="180" value="90"><button onclick="moveTo(Number(document.getElementById('customAngle').value))">Move</button></div>
+<div class="row"><label for="setServoAngle">Set Servo</label><input id="setServoAngle" type="number" min="0" max="180" value="90"><button onclick="moveTo(Number(document.getElementById('setServoAngle').value))">Set Servo</button></div>
 <div class="row"><label>IR sensor</label><input id="irAngle" type="number" min="0" max="180" value="35"><button onclick="aim('ir')">Aim IR</button></div>
-<div class="row"><label>Pedal sensor</label><input id="pedalAngle" type="number" min="0" max="180" value="90"><button onclick="aim('pedal')">Aim Pedal</button></div>
-<div class="row"><label>Flame sensor</label><input id="flameAngle" type="number" min="0" max="180" value="145"><button onclick="aim('flame')">Aim Flame</button></div>
+<div class="row"><label>Pedal sensor</label><input id="pedalAngle" type="number" min="0" max="180" value="180"><button onclick="aim('pedal')">Aim Pedal</button></div>
+<div class="row"><label>Flame sensor</label><input id="flameAngle" type="number" min="0" max="180" value="105"><button onclick="aim('flame')">Aim Flame</button></div>
 <div class="row"><button onclick="saveAngles()">Save angle settings</button><span id="servoStatus" class="status">Ready</span></div></section>
 <section class="card"><h2>Automatic radar</h2><p class="small">Non-blocking left-right servo sweep. Manual aiming stops radar automatically.</p>
 <div class="row"><label for="radarMin">Minimum angle</label><input id="radarMin" type="number" min="0" max="180" value="20"><label for="radarMax">Maximum angle</label><input id="radarMax" type="number" min="0" max="180" value="160"></div>
@@ -114,10 +148,13 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 <section class="card"><h2>Connection status</h2><div id="status" class="status">Connecting to stream…</div><p class="small">Web interface: port 80 · MJPEG stream: port 81 · QVGA 320 × 240</p></section></main>
 <script>
 const img=document.getElementById('stream'),statusBox=document.getElementById('status');let retryTimer;
-function reloadStream(){clearTimeout(retryTimer);statusBox.textContent='Connecting to camera stream…';img.src='http://'+location.hostname+':81/stream?ts='+Date.now()}
-img.onload=()=>statusBox.textContent='Stream connected. Confirm the image is updating.';img.onerror=()=>{statusBox.textContent='Stream disconnected; retrying…';clearTimeout(retryTimer);retryTimer=setTimeout(reloadStream,2000)};reloadStream();
+let cameraAvailable=null;
+function reloadStream(){clearTimeout(retryTimer);if(cameraAvailable===false){statusBox.textContent='Camera unavailable. Servo and radar controls remain active.';img.removeAttribute('src');img.alt='Camera unavailable';return}statusBox.textContent='Connecting to camera stream…';img.src='http://'+location.hostname+':81/stream?ts='+Date.now()}
+img.onload=()=>{statusBox.textContent='Stream connected. Confirm the image is updating.'};img.onerror=()=>{if(cameraAvailable===false)return;statusBox.textContent='Stream disconnected; checking camera status…';clearTimeout(retryTimer);retryTimer=setTimeout(reloadStream,3000)};
+async function checkCamera(){try{const r=await fetch('/health',{cache:'no-store'});const j=await r.json();cameraAvailable=!!j.cameraReady;if(!cameraAvailable){clearTimeout(retryTimer);img.removeAttribute('src');img.alt='Camera unavailable';statusBox.textContent='Camera unavailable (error 0x'+Number(j.cameraError).toString(16)+'). Servo and radar remain available.'}else if(!img.getAttribute('src')){reloadStream()}}catch(e){statusBox.textContent='Webpage active; camera status check failed.'}setTimeout(checkCamera,3000)}
+checkCamera();
 async function api(path){const r=await fetch(path,{cache:'no-store'});const j=await r.json();if(!r.ok||!j.ok)throw new Error(j.message||'Request failed');return j}
-async function moveTo(a){a=Math.max(0,Math.min(180,Math.round(a)));document.getElementById('customAngle').value=a;try{const j=await api('/servo?angle='+a);document.getElementById('servoStatus').textContent='Servo at '+j.angle+'°';document.getElementById('radarStatus').textContent='Radar stopped (manual control)'}catch(e){document.getElementById('servoStatus').textContent='Error: '+e.message}}
+async function moveTo(a){a=Math.max(0,Math.min(180,Math.round(a)));document.getElementById('customAngle').value=a;document.getElementById('setServoAngle').value=a;try{const j=await api('/servo?angle='+a);document.getElementById('servoStatus').textContent='Moving to '+j.target+'° (1° every 3 ms)';document.getElementById('radarStatus').textContent='Radar stopped (manual control)'}catch(e){document.getElementById('servoStatus').textContent='Error: '+e.message}}
 async function aim(which){const el=document.getElementById(which+'Angle');await moveTo(Number(el.value))}
 async function startRadar(){const q=new URLSearchParams({min:document.getElementById('radarMin').value,max:document.getElementById('radarMax').value,step:document.getElementById('radarStep').value,interval:document.getElementById('radarInterval').value});try{const j=await api('/radar/start?'+q);document.getElementById('radarStatus').textContent='Radar running: '+j.min+'°–'+j.max+'°'}catch(e){document.getElementById('radarStatus').textContent='Error: '+e.message}}
 async function stopRadar(){try{const j=await api('/radar/stop');document.getElementById('radarStatus').textContent='Radar stopped at '+j.angle+'°'}catch(e){document.getElementById('radarStatus').textContent='Error: '+e.message}}
@@ -173,13 +210,20 @@ static bool initCamera() {
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
+    cameraInitError = err;
+    cameraReady = false;
     Serial.printf("FAIL: esp_camera_init returned 0x%x\n", (unsigned int)err);
+    Serial.println("Camera is unavailable; continuing with Wi-Fi, webpage, servo and radar.");
     return false;
   }
 
   sensor_t *sensor = esp_camera_sensor_get();
   if (sensor == nullptr) {
+    cameraInitError = ESP_FAIL;
+    cameraReady = false;
     Serial.println("FAIL: esp_camera_sensor_get() returned NULL");
+    Serial.println("Camera is unavailable; continuing with Wi-Fi, webpage, servo and radar.");
+    esp_camera_deinit();
     return false;
   }
   sensor->set_framesize(sensor, FRAMESIZE_QVGA);
@@ -199,6 +243,8 @@ static bool initCamera() {
     esp_camera_fb_return(warmup);
   }
 
+  cameraReady = true;
+  cameraInitError = ESP_OK;
   Serial.println("PASS: Camera initialized (10 MHz XCLK, 1 frame buffer)");
   Serial.printf("Sensor PID: 0x%04X\n", sensor->id.PID);
   Serial.printf("Frame size status: %d (QVGA expected)\n", sensor->status.framesize);
@@ -212,6 +258,15 @@ static esp_err_t streamHandler(httpd_req_t *req) {
   static const char *CONTENT_TYPE = "multipart/x-mixed-replace;boundary=frame";
   static const char *BOUNDARY = "\r\n--frame\r\n";
   static const char *PART_HEADER = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+
+  if (!cameraReady) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    char message[128];
+    snprintf(message, sizeof(message), "Camera unavailable (initialization error 0x%x). Servo and radar remain available on port 80.\n", (unsigned int)cameraInitError);
+    httpd_resp_send(req, message, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+  }
 
   esp_err_t res = httpd_resp_set_type(req, CONTENT_TYPE);
   if (res != ESP_OK) return res;
@@ -305,13 +360,59 @@ static void startStreamServer() {
   Serial.println("Direct stream: http://192.168.4.1:81/stream");
 }
 
+static void handleCameraStart() {
+  if (!cameraReady) {
+    // Initialize only when the user explicitly requests video.
+    if (cameraInitAttempted) {
+      String json = String("{\"ok\":false,\"cameraReady\":false,\"cameraError\":") + (unsigned int)cameraInitError + ",\"message\":\"Camera initialization previously failed; reboot to retry.\"}";
+      webServer.send(503, "application/json", json);
+      return;
+    }
+    cameraInitAttempted = true;
+    initCamera();
+  }
+  if (!cameraReady) {
+    String json = String("{\"ok\":false,\"cameraReady\":false,\"cameraError\":") + (unsigned int)cameraInitError + ",\"message\":\"Camera initialization failed; servo and radar remain active.\"}";
+    webServer.send(503, "application/json", json);
+    return;
+  }
+  if (streamHttpd == nullptr) startStreamServer();
+  if (streamHttpd == nullptr) {
+    webServer.send(503, "application/json", "{\"ok\":false,\"cameraReady\":false,\"message\":\"Could not start stream server\"}");
+    return;
+  }
+  webServer.send(200, "application/json", "{\"ok\":true,\"cameraReady\":true}");
+}
+
+static void handleCameraStop() {
+  // Client-side code removes the image source before calling this endpoint.
+  if (streamHttpd != nullptr) {
+    httpd_handle_t server = streamHttpd;
+    streamHttpd = nullptr;
+    esp_err_t err = httpd_stop(server);
+    if (err != ESP_OK) Serial.printf("WARNING: httpd_stop returned 0x%x\n", (unsigned int)err);
+  }
+  if (cameraReady) {
+    esp_err_t err = esp_camera_deinit();
+    if (err != ESP_OK) Serial.printf("WARNING: esp_camera_deinit returned 0x%x\n", (unsigned int)err);
+  }
+  cameraReady = false;
+  cameraInitAttempted = false; // allow another explicit start attempt
+  cameraInitError = ESP_OK;
+  Serial.println("Camera stopped on request; camera resources released. Radar and servo remain active.");
+  webServer.send(200, "application/json", "{\"ok\":true,\"cameraReady\":false}");
+}
+
 static void handleRoot() {
   webServer.sendHeader("Cache-Control", "no-store");
   webServer.send_P(200, "text/html", INDEX_HTML);
 }
 
 static void handleHealth() {
-  String json = "{\"camera\":\"initialized\",\"psram\":";
+  String json = String("{\"camera\":\"") + (cameraReady ? "initialized" : "unavailable") + "\",\"cameraReady\":";
+  json += cameraReady ? "true" : "false";
+  json += ",\"cameraError\":" + String((unsigned int)cameraInitError);
+  json += ",\"psram\":";
   json += psramFound() ? "true" : "false";
   json += ",\"freeHeap\":" + String(ESP.getFreeHeap());
   json += ",\"freePsram\":" + String(psramFound() ? ESP.getFreePsram() : 0);
@@ -322,9 +423,14 @@ static void handleHealth() {
 
 static void handleServo() {
   if (!webServer.hasArg("angle")) { webServer.send(400, "application/json", "{\"ok\":false,\"message\":\"Missing angle\"}"); return; }
+  const int requested = webServer.arg("angle").toInt();
+  if (requested < 0 || requested > 180) {
+    webServer.send(400, "application/json", "{\"ok\":false,\"message\":\"Angle must be 0 to 180\"}");
+    return;
+  }
   stopRadar("manual servo command");
-  moveServoTo(webServer.arg("angle").toInt());
-  webServer.send(200, "application/json", String("{\"ok\":true,\"angle\":") + currentAngle + "}");
+  moveServoTo(requested);
+  webServer.send(200, "application/json", String("{\"ok\":true,\"angle\":") + currentAngle + ",\"target\":" + manualTargetAngle + "}");
 }
 
 static void handleRadarStart() {
@@ -358,6 +464,7 @@ static void handleRadarStart() {
     panServo.write(currentAngle);
     radarDirection = 1;
   }
+  manualMoveActive = false; // Radar takes control of the servo.
   radarRunning = true;
   radarLastStepMs = millis();
   Serial.printf("Radar started: min=%d max=%d step=%d interval=%lu ms\n", radarMinAngle, radarMaxAngle, radarStepDegrees, radarIntervalMs);
@@ -395,20 +502,21 @@ void setup() {
   Serial.println("Camera configuration kept at the proven working settings");
   Serial.println("===============================================");
 
-  if (!initCamera()) {
-    Serial.println("Camera initialization failed; halting.");
-    while (true) delay(1000);
-  }
-
-  // Initialize servo only after camera warm-up succeeds; leave camera settings unchanged.
+  // Initialize servo and saved angles independently of the camera. A camera
+  // failure must never disable the AP, webpage, manual servo or radar features.
   panServo.setPeriodHertz(50);
   panServo.attach(SERVO_GPIO, SERVO_MIN_US, SERVO_MAX_US);
   delay(250);
   preferences.begin("cam-aim", false);
-  angleIR = clampAngle(preferences.getInt("ir", angleIR));
-  anglePedal = clampAngle(preferences.getInt("pedal", anglePedal));
-  angleFlame = clampAngle(preferences.getInt("flame", angleFlame));
+  angleIR = clampAngle(preferences.getInt("ir", 35));
+  anglePedal = clampAngle(preferences.getInt("pedal", 180));
+  angleFlame = clampAngle(preferences.getInt("flame", 105));
   moveServoTo(90);
+
+  // Do not initialize the camera at boot. Keep its CPU/RAM use off until
+  // the user presses Start Camera Stream in the webpage.
+  cameraReady = false;
+  cameraInitAttempted = false;
 
   WiFi.mode(WIFI_AP);
   WiFi.setSleep(false);
@@ -424,6 +532,8 @@ void setup() {
 
   webServer.on("/", HTTP_GET, handleRoot);
   webServer.on("/health", HTTP_GET, handleHealth);
+  webServer.on("/camera/start", HTTP_GET, handleCameraStart);
+  webServer.on("/camera/stop", HTTP_GET, handleCameraStop);
   webServer.on("/servo", HTTP_GET, handleServo);
   webServer.on("/radar/start", HTTP_GET, handleRadarStart);
   webServer.on("/radar/stop", HTTP_GET, handleRadarStop);
@@ -433,15 +543,26 @@ void setup() {
   webServer.begin();
   Serial.println("PASS: Web interface started on port 80");
 
-  startStreamServer();
+  // Boot directly into radar mode. Camera is fully deferred until requested.
+  radarMinAngle = 20;
+  radarMaxAngle = 160;
+  radarStepDegrees = 2;
+  radarIntervalMs = 80;
+  currentAngle = radarMinAngle;
+  panServo.write(currentAngle);
+  radarDirection = 1;
+  radarLastStepMs = millis();
+  radarRunning = true;
   Serial.println("\nConnect your phone to DHARSSHITH-CAM, then open http://192.168.4.1/");
-  Serial.println("Servo manual control and non-blocking auto radar enabled on GPIO 13.");
-  Serial.println("For direct stream test open http://192.168.4.1:81/stream");
+  Serial.println("BOOT MODE: automatic radar enabled on GPIO 13 (20-160 degrees).");
+  Serial.println("Camera is OFF at boot to prioritize radar, servo and Wi-Fi response.");
+  Serial.println("Press Start Camera Stream on the webpage to initialize camera on demand.");
   Serial.println("===============================================");
 }
 
 void loop() {
   webServer.handleClient();
+  manualServoTick();
   radarTick();
   delay(1);
 }
